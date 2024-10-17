@@ -1,6 +1,6 @@
 import numpy as np
 import pickle
-import cv2
+from cv2 import *
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.applications.resnet50 import preprocess_input
 from mtcnn import MTCNN
