@@ -1,43 +1,55 @@
-import numpy as np
+import os
+import streamlit as st 
+import cv2
+from PIL import Image
+from mtcnn import MTCNN
 import pickle
-from cv2 import *
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.applications.resnet50 import preprocess_input
-from mtcnn import MTCNN
-from PIL import Image
-from sklearn.metrics.pairwise import cosine_similarity
-import streamlit as st
+
+# Initialize MTCNN for face detection and ResNet50 for feature extraction
+detector = MTCNN()
+model = ResNet50(weights="imagenet", include_top=False, input_shape=(224, 224, 3), pooling="avg")
+
+# Get the absolute path of the current script
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Construct the full path to the embedding and filenames pkl files
+embedding_path = os.path.join(current_dir, 'embedding.pkl')
+filenames_path = os.path.join(current_dir, 'filenames.pkl')
 
 # Load the feature list and filenames from pickle files
-feature_list = np.array(pickle.load(open("./embedding.pkl", "rb")))
-filenames = pickle.load(open("filenames.pkl", "rb"))
+feature_list = np.array(pickle.load(open(embedding_path, "rb")))
+filenames = pickle.load(open(filenames_path, "rb"))
 
-# Initialize the ResNet50 model and MTCNN detector
-model = ResNet50(weights="imagenet", include_top=False, input_shape=(224, 224, 3), pooling="avg")
-detector = MTCNN()
+# Ensure the uploads directory exists
+UPLOAD_FOLDER = os.path.join(current_dir, "uploads")
+if not os.path.exists(UPLOAD_FOLDER):
+    os.makedirs(UPLOAD_FOLDER)
 
-# Streamlit app title and description
-st.title("Face Similarity Detector")
-st.write("Upload an image to detect faces and find the most similar one.")
+# Function to save uploaded image
+def save_upload_image(uploaded_image):
+    try:
+        file_path = os.path.join(UPLOAD_FOLDER, uploaded_image.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_image.getbuffer())
+        return file_path  # Return the file path of the saved image
+    except Exception as e:
+        st.error(f"Error saving the image: {e}")
+        return None
 
-# Upload the sample image using Streamlit
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
-
-if uploaded_file is not None:
-    # Convert the uploaded file to an OpenCV image
-    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
-    sample_img = cv2.imdecode(file_bytes, 1)
-
-    # Detect faces in the image
-    results = detector.detect_faces(sample_img)
-
-    # Check if at least one face is detected
+# Function to extract features from the uploaded image
+def extract_features(img_path, model, detector):
+    img = cv2.imread(img_path)
+    results = detector.detect_faces(img)
+    
     if results:
-        # Get the bounding box of the first detected face
         x, y, width, height = results[0]['box']
-        
+    
         # Extract the face from the image
-        face = sample_img[y:y + height, x:x + width]
+        face = img[y:y + height, x:x + width]
 
         # Convert the face to RGB for processing
         face_rgb = cv2.cvtColor(face, cv2.COLOR_BGR2RGB)
@@ -56,22 +68,55 @@ if uploaded_file is not None:
 
         # Predict features using the model
         result = model.predict(preprocessed_img).flatten()
-
-        # Calculate cosine similarity with all features in the feature list
-        similarity = []
-        for feature in feature_list:
-            sim = cosine_similarity(result.reshape(1, -1), feature.reshape(1, -1))
-            similarity.append(sim[0][0])  # Get the similarity score
-
-        # Find the index of the most similar face
-        index_pos = sorted(enumerate(similarity), reverse=True, key=lambda x: x[1])[0][0]
-
-        # Load and display the most similar face
-        output_image = cv2.imread(filenames[index_pos])
-        output_image_rgb = cv2.cvtColor(output_image, cv2.COLOR_BGR2RGB)
-        output_name = filenames[index_pos].split("\\")[1]
-
-        st.image(output_image_rgb, caption=f"Most Similar Face: {output_name}", use_column_width=True)
-        st.success(f"Found the most similar face: {output_name}")
+        return result
     else:
-        st.error("No face detected in the image.")
+        st.text("No face detected in the image.")
+        return None
+
+def recommend(feature_list, features):
+    # Calculate cosine similarity with all features in the feature list
+    similarity = []
+    for feature in feature_list:
+        sim = cosine_similarity(features.reshape(1, -1), feature.reshape(1, -1))
+        similarity.append(sim[0][0])  # Get the similarity score
+
+    # Find the index of the most similar face
+    index_pos = sorted(enumerate(similarity), reverse=True, key=lambda x: x[1])[0][0]
+
+    return index_pos
+
+# Streamlit app title
+st.title("Which Bollywood Celebrity Are You?")
+
+# Upload image using Streamlit's file uploader
+uploaded_image = st.file_uploader("Choose an image")
+
+if uploaded_image is not None:
+    file_path = save_upload_image(uploaded_image)
+    
+    if file_path:
+        display_image = Image.open(file_path)
+
+        # Extract features from the uploaded image
+        features = extract_features(file_path, model, detector)
+        
+        if features is not None:
+            index_pos = recommend(feature_list, features)
+
+            # Absolute path for the output image
+            output_image_path = os.path.join(current_dir, filenames[index_pos])
+            output_image = cv2.imread(output_image_path)  # Read the output image using absolute path
+            output_name = os.path.basename(filenames[index_pos])  # Get the image file name for display
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.header("Your Image:")
+                st.image(display_image, caption="Uploaded Image", use_column_width=True)
+            with col2:
+                st.header(output_name)
+                st.image(output_image, caption="Matched Image", use_column_width=True)
+
+            st.text(f"Extracted Features: {features}")
+            st.text(f"Feature Shape: {features.shape}")
+        else:
+            st.text("Feature extraction failed.")
